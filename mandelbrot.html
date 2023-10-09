@@ -329,6 +329,27 @@ for (int n = 0; n < max_n; n++) {
 			
 			<p>One useful trait of the complex class is that it contains the only references to the underlying data types used to store the components to the complex numbers. If you want, you can easily swap them out for single-precision floats for a performance boost or for a more precise data type for increased zoom. You could even make the class a template to allow the underlying type to be swapped out to meet the requirements of a render.</p>
 			
+			<p>There are two other little utility classes we should have: one for defining a color, and another for a pixel coordinate.</p>
+			
+			<pre><code class="language-cpp">
+class color {
+public:
+	uint8_t r;
+	uint8_t g;
+	uint8_t b;
+	
+	color(uint8_t red, uint8_t green, uint8_t blue) : r(red), g(green), b(blue) {}
+};
+
+class pixel {
+public:
+	unsigned int x;
+	unsigned int y;
+	
+	pixel(unsigned int pixel_x, unsigned int pixel_y) : x(pixel_x), y(pixel_y) {}
+};
+			</code></pre>
+			
 			<p>Next up: a camera class. Because I'm really going all-in here, I'll make a 2D transformation matrix class. This not only allows for panning and scaling but for rotation as well, and even shearing of the render area. The constructor I've included below, however, only allows the creation of a scaling-panning matrix. A more sophisticated one will be added down the line, along with many other functions that warrant exploration. A simpler camera class could basically just define a rectangle. It's most important feature is just a function that converts a pixel into the appropriate complex number.</p>
 			
 			<pre><code class="language-cpp">
@@ -392,83 +413,202 @@ public:
 	// Iterate the equation num_n times. The function is responsible for the maintenance of the fractal_calculator::n member.
 	virtual void iterate(unsigned int num_n) = 0;
 	
-	// Returns true if this point is beleived to be inside the fractal, false otherwise.
+	// Returns true if this point is believed to be inside the fractal, false otherwise.
 	virtual bool is_inside_fractal() const = 0;
 };
 			</code></pre>
 			
-			<p>A lot is going on here. We include a no-arg constructor that will be useful later, and another constructor that is meant to be overidden by subclasses.</p>
+			<p>We include a no-arg constructor that will be useful later. The two virtual functions exist for the purpose of iterating. The iterate() function is supposed to iterate up to num_n times, unless the function bails first. is_inside_fractal() returns true if the iterator has not yet escaped, and false otherwise.</p>
 			
-			<p>The iterate_to(int) function is also declared, which iterates up to a certain value of n using the previous function. This is useful if multiple passes of iteration steps are desired.</p>
-			
-			<p>Now, we will create the iterator_grid object.</p>
+			<p>Now, we will move on to a painter object. This object defines the method used for converting the grid to an image. It implements only a single function, which takes a position and a fractal_calculator object, and outputs a color.</p>
 			
 			<pre><code class="language-cpp">
-// Class representing a grid of fractal_iterator objects.
-template<class T>
-class iterator_grid {
+class fractal_painter {
 public:
-	// The camera used by this grid for rendering.
+	virtual color get_color_of(const fractal_calculator&, const pixel& pos) = 0;
+};
+			</code></pre>
+			
+			<p>Now that we have our components, we can tie them all together with the fractal_renderer class. This class stores the size of the output grid as well as the output image itself and the grid of calculators, plus a camera and a painter object.</p>
+			
+			<pre><code class="language-cpp">
+template &lt;class T>
+class fractal_renderer {
+public:
+	// The width and height of the output image.
+	const size_t width;
+	const size_t height;
+	
+	// A camera that maps pixel coordinates to complex numbers.
 	camera cam;
 	
-	// The grid of fractal iterators.
-	T* data;
+	// An array of pixel values.
+	uint8_t* img;
 	
-	iterator_grid(const camera& grid_cam) : cam(grid_cam) {
-		static_assert(std::is_base_of_v<fractal_iterator, T>, "Template parameter must derive from fractal_iterator.");
+	// A class that implements fractal_calculator
+	T* calculators;
+	
+	// A class that implements fraactal_painter
+	fractal_painter* painter;
+	
+	fractal_renderer(size_t grid_width, size_t grid_height, const camera& rend_cam, fractal_painter* rend_painter) :
+		width(grid_width), height(grid_height), cam(rend_cam), painter(rend_painter) {
 		
-		// Allocate and initialize memory.
-		data = (T*) malloc(cam.width*cam.height*sizeof(T));
-		for (int x = 0; x < cam.width; x++) {
-			for (int y = 0; y < cam.height; y++) {
-				data[y*cam.width + x] = T(cam, x, y);
+		static_assert(std::is_base_of_v<fractal_calculator, T>, "Template parameter must derive from fractal_calculator.");
+		
+		img = (uint8_t*) malloc(width*height*3*sizeof(uint8_t));
+		
+		calculators = new T[width*height];
+		for (int y = 0; y < height; y++) {
+			for (int x = 0; x < width; x++) {
+				calculators[y*width + x] = T(cam, pixel(x, y));
 			}
 		}
 	}
 	
-	// Call iterate on all grid cells
-	void iterate(int num_n) {
-		for (int i = 0; i < cam.width*cam.height; i++) {
-			data[i].iterate(num_n);
+	void iterate_all(unsigned int num_n) {
+		for (int i = 0; i < width*height; i++) {
+			calculators[i].iterate(num_n);
 		}
 	}
 	
-	// Call iterate_to on all grid cells
-	void iterate_to(int max_n) {
-		for (int i = 0; i < cam.width*cam.height; i++) {
-			data[i].iterate_to(max_n);
+	void paint_all() {
+		for (int x = 0; x < width; x++) {
+			for (int y = 0; y < height; y++) {
+				int index = y*width + x;
+				
+				color col = painter->get_color_of(calculators[index], pixel(x, y));
+				
+				img[index*3  ] = col.r;
+				img[index*3+1] = col.g;
+				img[index*3+2] = col.b;
+			}
 		}
 	}
 	
-	~iterator_grid() {
-		free(data);
+	void save(const char* filename) {
+		char hdr[64];
+		int hdr_len = sprintf(hdr, "P6 %ul %ul 255 ", width, height);
+		
+		FILE* fout = fopen(filename, "w");
+		fwrite(hdr, 1, hdr_len, fout);
+		fwrite(img, 1, width*height*3, fout);
+		fclose(fout);
+	}
+	
+	~fractal_renderer() {
+		free(img);
+		free(calculators);
 	}
 };
 			</code></pre>
 			
-			<p>As you can see, this is a template class requiring the template parameter to derive from fractal_iterator. It assumes that the constructor and iterate function have been defined and constructs each nobject in the grid separately. It includes functions for calling iterate() and iterate_to() and all of the cells.</p>
+			<p>The constructor ensures that the template parametor implements fractal_calculator, as this is used for the type of calculator itself. It allocates space for the image, with 3 channels and 3 bytes per channel (up until now we've only been using grayscale, with 1 byte per channel) and it allocates an array of calculators (this is where that no-arg constructor gets used). It calls a constructor which it expects to exist on the calculators.</p>
 			
-			<p>Now we initialize the iterator in the main function like so:</p>
+			<p>The iterate_all() function simply calls iterate() on all of the calculators, and paint_all() fills the image with values acquired from painter.get_color_of(). Finally, the save() function simply saves the image as a ppm.</p>
+			
+			<p>Our Mandelbrot calculator is quite simple and never has to change, it is more or less the same code as before but wrapped in a class that our fractal renderer can use.</p>
 			
 			<pre><code class="language-cpp">
-// Create the iterator grid.
-iterator_grid<mandelbrot_iterator> iter(cam);
+class mandelbrot_calculator : public fractal_calculator {
+public:
+	complex C;
+	complex Z;
+	
+	mandelbrot_calculator() {}
+	
+	mandelbrot_calculator(const camera& cam, const pixel& pos) {
+		C = cam.pixel_to_complex(pos);
+		Z = complex(0, 0);
+	}
+	
+	virtual void iterate(unsigned int num_n) {
+		if (!is_inside_fractal()) return;
+		
+		int i;
+		for (i = 0; i < num_n; i++) {
+			Z.square_and_add(C);
+			
+			if (!is_inside_fractal()) {
+				i++;
+				break;
+			}
+		}
+		
+		n += i;
+	}
+	
+	virtual bool is_inside_fractal() const {
+		return Z.sqr_abs() < 4;
+	}
+};
 			</code></pre>
 			
-			<p>And our for loops are removed and replaced by similar for-loops which simply color the image:</p>
+			<p>Next is our painter class. We'll construct a simple painter function that does the same thing as before. It will color a pixel one of two colors depending on the points inclusion in the Mandelbrot set.</p>
 			
 			<pre><code class="language-cpp">
-// Iterate over all pixels
-for (int x = 0; x < width; x++) {
-	for (int y = 0; y < height; y++) {
-		img[y*width + x] = (iter.data[y*width + x].Z.sqr_abs() > 4) * 255;
+class mandelbrot_binary_painter : public fractal_painter {
+public:
+	color in;
+	color out;
+	
+	mandelbrot_binary_painter(color inside, color outside) : in(inside), out(outside) {}
+	
+	virtual color get_color_of(const fractal_calculator& calc, const pixel& pos) {
+		if (calc.is_inside_fractal()) {
+			return in;
+		}
+		else {
+			return out;
+		}
 	}
+};
+			</code></pre>
+			
+			<p>Finally, we can rewrite our main() function to look like this:</p>
+			
+			<pre><code class="language-cpp">
+int main() {
+	// Size of the image to produce
+	const size_t width = 1920;
+	const size_t height = 1080;
+	
+	// The maximum number of iterations to perform.
+	int max_n = 50;
+	
+	// The region we'd like to render
+	double left = -2.6;
+	double bottom = -1.181;
+	double right = 1.6;
+	double top = 1.181;
+	
+	// Create a camera
+	camera cam(width, height, left, bottom, right, top);
+	
+	// Create a painter
+	mandelbrot_binary_painter painter(color(0, 0, 0), color(255, 255, 255));
+	
+	// Create a Mandelbrot calculator
+	fractal_renderer&lt;mandelbrot_calculator&gt; rend(width, height, cam, &painter);
+	
+	// Iterate, paint, and save.
+	rend.iterate_all(max_n);
+	rend.paint_all();
+	rend.save("out.ppm");
+	
+	return 0;
 }
 			</code></pre>
 			
-			<p>We have now nearly abstracted away the entire process; only colorization remains. For this purpose, we will choose a similar inheritance model.</p>
+			<h2 class="project_header"><i>Adding Some Color</i></h2>
 			
+			<p>Our primary focus now rests in writing increasingly sophisticated painter classes. For starters, the below class implements the renormalized iteration count algorithm with a grayscale palette, explained simply <a href="https://stackoverflow.com/questions/369438/smooth-spectrum-for-mandelbrot-set-rendering">here</a>. The following explanation is usually attached to this algorithm wherever it is presented, and since I'm wholly unable to explain it myself, I'll continue that tradition:</p>
 			
+			<blockquote cite="https://linas.org/art-gallery/escape/escape.html">
+			The following simplified and very insightful explanation is provided by Earl L. Hinrichs:
+			<br>
+“Ignoring the +C in the usual formula, the orbit point grows by Z := Z^2. So we have the progression Z, Z^2, Z^4, Z^8, Z^16, etc. Iteration counting amounts to assigning an integer to these values. Ignoring a multiplier, the log of this sequence is: 1, 2, 4, 8, 16. The log-log is 0, 1, 2, 3, 4 which matches the integer value from the iteration counting. So the appropriate generalization of the discrete iteration counting to a continuous function would be the double log.”
+			</blockquote>
 			
 			<!--
 			

@@ -103,26 +103,6 @@ public:
 	}
 };
 
-// Base class for a fractal calculator.
-// Derivatives of this class may render different fractals.
-class fractal_calculator {
-public:
-	unsigned int n;
-	
-	fractal_calculator() : n(0) {}
-	
-	// Iterate the equation num_n times. The function is responsible for the maintenance of the fractal_calculator::n member.
-	virtual void iterate(unsigned int num_n) = 0;
-	
-	// Returns true if this point is beleived to be inside the fractal, false otherwise.
-	virtual bool is_inside_fractal() const = 0;
-};
-
-class fractal_painter {
-public:
-	virtual color get_color_of(const fractal_calculator&, const pixel& pos) = 0;
-};
-
 template <class T>
 class fractal_renderer {
 public:
@@ -197,6 +177,8 @@ public:
 
 class mandelbrot_calculator : public fractal_calculator {
 public:
+	unsigned int n;
+	
 	complex C;
 	complex Z;
 	
@@ -207,30 +189,63 @@ public:
 		Z = complex(0, 0);
 	}
 	
-	virtual void iterate(unsigned int num_n) {
+	void iterate(unsigned int num_n) {
 		if (!is_inside_fractal()) return;
 		
 		int i;
-		for (i = 1; i <= num_n; i++) {
+		for (i = 0; i < num_n; i++) {
 			Z.square_and_add(C);
 			
-			if (!is_inside_fractal()) break;
+			if (!is_inside_fractal()) {
+				i++;
+				break;
+			}
 		}
 		
 		n += i;
 	}
 	
-	virtual bool is_inside_fractal() const {
-		return Z.sqr_abs() < 4;
+	bool is_inside_fractal() const {
+		return Z.sqr_abs() < 400;
 	}
 };
 
 class mandelbrot_binary_painter : public fractal_painter {
 public:
+	color in;
+	color out;
+	
+	mandelbrot_binary_painter(color inside, color outside) : in(inside), out(outside) {}
+	
 	virtual color get_color_of(const fractal_calculator& calc, const pixel& pos) {
-		uint8_t col = !calc.is_inside_fractal() * 255;
+		if (calc.is_inside_fractal()) {
+			return in;
+		}
+		else {
+			return out;
+		}
+	}
+};
+
+class mandelbrot_renormalized_painter : public fractal_painter {
+public:
+	color in;
+	
+	mandelbrot_renormalized_painter(color inside) : in(inside) {}
+	
+	virtual color get_color_of(const fractal_calculator& calc, const pixel& pos) {
+		mandelbrot_calculator* mandel_calc = (mandelbrot_calculator*) &calc;
 		
-		return color(col, col, col);
+		if (calc.is_inside_fractal()) {
+			return in;
+		}
+		else {
+			float val = sqrt(mandel_calc->Z.sqr_abs());
+			val = calc.n + 1 - log(log(val))/log(2);		
+			val = val / 50 * 255;
+			printf("%.2f\n", val);
+			return color(val, val, val);
+		}
 	}
 };
 
@@ -251,7 +266,7 @@ int main() {
 	// Create a camera
 	camera cam(width, height, left, bottom, right, top);
 	
-	mandelbrot_binary_painter painter;
+	mandelbrot_renormalized_painter painter(color(0, 0, 0));
 	
 	fractal_renderer<mandelbrot_calculator> rend(width, height, cam, &painter);
 	
