@@ -4,6 +4,17 @@
 
 #include <type_traits>
 
+class color;
+class pixel;
+class complex;
+
+class camera;
+class accumulator;
+class painter;
+
+template <class accumulator_t, class painter_t>
+class renderer;
+
 class color {
 public:
 	uint8_t r;
@@ -103,8 +114,25 @@ public:
 	}
 };
 
-template <class T>
-class fractal_renderer {
+// Type from which all accumulators must derive.
+class accumulator {
+public:
+	unsigned int n;
+	renderer<accumulator, painter>* rend;
+	
+	accumulator() {}
+};
+
+// Type from which all painters must derive.
+class painter {
+public:
+	renderer<accumulator, painter>* rend;
+	
+	painter() {}
+};
+
+template <class accumulator_t, class painter_t>
+class renderer {
 public:
 	// The width and height of the output image.
 	const size_t width;
@@ -116,30 +144,37 @@ public:
 	// An array of pixel values.
 	uint8_t* img;
 	
-	// A class that implements fractal_calculator
-	T* calculators;
+	// The Mandelbrot accumulators.
+	accumulator_t* accum;
 	
 	// A class that implements fraactal_painter
-	fractal_painter* painter;
+	painter_t* paint;
 	
-	fractal_renderer(size_t grid_width, size_t grid_height, const camera& rend_cam, fractal_painter* rend_painter) :
-		width(grid_width), height(grid_height), cam(rend_cam), painter(rend_painter) {
+	renderer(size_t grid_width, size_t grid_height, const camera& rend_cam, painter_t* rend_painter) :
+		width(grid_width), height(grid_height), cam(rend_cam), paint(rend_painter) {
 		
-		static_assert(std::is_base_of_v<fractal_calculator, T>, "Template parameter must derive from fractal_calculator.");
+		static_assert(std::is_base_of_v<accumulator, accumulator_t>, "First template parameter must derive from accumulator.");
+		static_assert(std::is_base_of_v<painter, painter_t>, "Second template parameter must derive from painter.");
 		
-		img = (uint8_t*) malloc(width*height*3*sizeof(uint8_t));
+		img = new uint8_t[width*height*3];
 		
-		calculators = new T[width*height];
+		// Initialize painter.
+		paint->rend = (renderer<accumulator, painter>*) this;
+		
+		// Initialize accumulators.
+		accum = new accumulator_t[width*height];
 		for (int y = 0; y < height; y++) {
 			for (int x = 0; x < width; x++) {
-				calculators[y*width + x] = T(cam, pixel(x, y));
+				accum[y*width + x] = accumulator_t(cam, pixel(x, y));
+				accum[y*width + x].n = 0;
+				accum[y*width + x].rend = (renderer<accumulator, painter>*) this;
 			}
 		}
 	}
 	
 	void iterate_all(unsigned int num_n) {
 		for (int i = 0; i < width*height; i++) {
-			calculators[i].iterate(num_n);
+			accum[i].iterate(num_n);
 		}
 	}
 	
@@ -148,7 +183,7 @@ public:
 			for (int y = 0; y < height; y++) {
 				int index = y*width + x;
 				
-				color col = painter->get_color_of(calculators[index], pixel(x, y));
+				color col = paint->get_color_of(accum[index], pixel(x, y));
 				
 				img[index*3  ] = col.r;
 				img[index*3+1] = col.g;
@@ -167,24 +202,22 @@ public:
 		fclose(fout);
 	}
 	
-	~fractal_renderer() {
-		free(img);
-		free(calculators);
+	~renderer() {
+		delete[] img;
+		delete[] accum;
 	}
 };
 
 /* ---- Custom classes & functions ---- */
 
-class mandelbrot_calculator : public fractal_calculator {
+class mandel_accumulator : public accumulator {
 public:
-	unsigned int n;
-	
 	complex C;
 	complex Z;
 	
-	mandelbrot_calculator() {}
+	mandel_accumulator() {}
 	
-	mandelbrot_calculator(const camera& cam, const pixel& pos) {
+	mandel_accumulator(const camera& cam, const pixel& pos) {
 		C = cam.pixel_to_complex(pos);
 		Z = complex(0, 0);
 	}
@@ -210,14 +243,14 @@ public:
 	}
 };
 
-class mandelbrot_binary_painter : public fractal_painter {
+class mandel_binary_painter : public painter {
 public:
 	color in;
 	color out;
 	
-	mandelbrot_binary_painter(color inside, color outside) : in(inside), out(outside) {}
+	mandel_binary_painter(color inside, color outside) : in(inside), out(outside) {}
 	
-	virtual color get_color_of(const fractal_calculator& calc, const pixel& pos) {
+	virtual color get_color_of(const mandel_accumulator& calc, const pixel& pos) {
 		if (calc.is_inside_fractal()) {
 			return in;
 		}
@@ -227,23 +260,20 @@ public:
 	}
 };
 
-class mandelbrot_renormalized_painter : public fractal_painter {
+class mandel_renormalized_painter : public painter {
 public:
 	color in;
 	
-	mandelbrot_renormalized_painter(color inside) : in(inside) {}
+	mandel_renormalized_painter(color inside) : in(inside) {}
 	
-	virtual color get_color_of(const fractal_calculator& calc, const pixel& pos) {
-		mandelbrot_calculator* mandel_calc = (mandelbrot_calculator*) &calc;
-		
+	color get_color_of(const mandel_accumulator& calc, const pixel& pos) {
 		if (calc.is_inside_fractal()) {
 			return in;
 		}
 		else {
-			float val = sqrt(mandel_calc->Z.sqr_abs());
+			float val = sqrt(calc.Z.sqr_abs());
 			val = calc.n + 1 - log(log(val))/log(2);		
 			val = val / 50 * 255;
-			printf("%.2f\n", val);
 			return color(val, val, val);
 		}
 	}
@@ -266,9 +296,9 @@ int main() {
 	// Create a camera
 	camera cam(width, height, left, bottom, right, top);
 	
-	mandelbrot_renormalized_painter painter(color(0, 0, 0));
+	mandel_renormalized_painter painter(color(0, 0, 0));
 	
-	fractal_renderer<mandelbrot_calculator> rend(width, height, cam, &painter);
+	renderer<mandel_accumulator, mandel_renormalized_painter> rend(width, height, cam, &painter);
 	
 	rend.iterate_all(max_n);
 	rend.paint_all();
