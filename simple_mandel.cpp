@@ -21,7 +21,161 @@ public:
 	uint8_t g;
 	uint8_t b;
 	
+	color() : r(0), g(0), b(0) {}
+	
 	color(uint8_t red, uint8_t green, uint8_t blue) : r(red), g(green), b(blue) {}
+};
+
+class cubic {
+public:
+	// ax^3 + bx^2 + cx + d
+	float a;
+	float b;
+	float c;
+	float d;
+	
+	cubic() : a(0), b(0), c(0), d(0) {}
+	
+	cubic(float a, float b, float c, float d) : a(a), b(b), c(c), d(d) {}
+	
+	cubic derivative() {
+		return cubic(0, 3*a, 2*b, c);
+	}
+	
+	float evaluate(float x) {
+		return a*x*x*x + b*x*x + c*x + d;
+	}
+};
+
+class palette_point {
+public:
+	color col; // The color assigned to this point.
+	float pos; // The position of this point.
+	
+	// Equations representing how each channel changes from this point to the next point.
+	cubic r;
+	cubic g;
+	cubic b;
+	
+	palette_point() {}
+	
+	palette_point(color point_col, float point_pos) : col(point_col), pos(point_pos), r(0, 0, 0, 0), g(0, 0, 0, 0), b(0, 0, 0, 0) {}
+};
+
+class palette {
+public:
+	enum interpolation {LINEAR, CUBIC};
+	
+	int max_points;
+	int num_points;
+	
+	palette_point* points;
+	
+	interpolation inter;
+	
+	palette(int max_points, interpolation inter) : max_points(max_points), inter(inter), num_points(0) {
+		points = new palette_point[max_points];
+	}
+	
+	// Adds a new point.
+	void add_point(const palette_point& new_point) {
+		points[num_points] = new_point;
+		num_points++;
+	}
+	
+	// Performs calculations required for evaluation. Must be called prior to calling evaluate().
+	void cache() {
+		switch(inter) {
+			// Construct equations so that the channels of the colors are interpreted linearly.
+			case LINEAR:
+				for (int i = 0; i < num_points-1; i++) {
+					palette_point& c = points[i];
+					palette_point& n = points[i+1];
+					float run = n.pos - c.pos;
+					
+					c.r.a = 0;
+					c.r.b = 0;
+					c.r.c = (n.col.r - c.col.r) / run;
+					c.r.d = c.col.r - c.r.c * c.pos;
+					
+					c.g.a = 0;
+					c.g.b = 0;
+					c.g.c = (n.col.g - c.col.g) / run;
+					c.g.d = c.col.g - c.g.c * c.pos;
+					
+					c.b.a = 0;
+					c.b.b = 0;
+					c.b.c = (n.col.b - c.col.b) / run;
+					c.b.d = c.col.b - c.b.c * c.pos;
+				}
+				break;
+			
+			// Construct equations so that the channels of the colors are interpreted cubically.
+			case CUBIC:
+				break;
+		}
+	}
+	
+	color evaluate(float pos) {
+		if (num_points == 0) {
+			return color(255, 105, 180); // Hot pink.
+		}
+		
+		if (pos <= points[0].pos) {
+			return points[0].col;
+		}
+		else if (pos > points[num_points-1].pos) {
+			return points[num_points-1].col;
+		}
+		
+		for (int i = 1; i < num_points; i++) {
+			if (points[i].pos > pos) {
+				return color(
+					points[i-1].r.evaluate(pos),
+					points[i-1].g.evaluate(pos),
+					points[i-1].b.evaluate(pos)
+				);
+			}
+		}
+		
+		printf("Palette has reached an invalid state.\n");
+		exit(0);
+		return color(0, 0, 0); // Warning suppression.
+	}
+	
+	void sample(const char* filename, size_t width, size_t height) {
+		float min_pos = points[0].pos;
+		float max_pos = points[num_points-1].pos;
+		float range = max_pos - min_pos;
+		
+		// Create the image.
+		uint8_t* img = new uint8_t[width*height*3];
+		for (int x = 0; x < width; x++) {
+			color col = evaluate((double) x / width * range + min_pos);
+			
+			for (int y = 0; y < height; y++) {
+				int index = (y*width + x)*3;
+				img[index  ] = col.r;
+				img[index+1] = col.g;
+				img[index+2] = col.b;
+			}
+		}
+		
+		// Save the image.
+		char hdr[128];
+		int hdr_len = sprintf(hdr, "P6 %ul %ul 255 ", width, height);
+		
+		FILE* fout = fopen(filename, "wb");
+		fwrite(hdr, 1, hdr_len, fout);
+		fwrite(img, 1, width*height*3, fout);
+		fclose(fout);
+		
+		delete[] img;
+	}
+	
+	~palette() {
+		delete[] points;
+	}
 };
 
 class pixel {
@@ -196,7 +350,7 @@ public:
 		char hdr[64];
 		int hdr_len = sprintf(hdr, "P6 %ul %ul 255 ", width, height);
 		
-		FILE* fout = fopen(filename, "w");
+		FILE* fout = fopen(filename, "wb");
 		fwrite(hdr, 1, hdr_len, fout);
 		fwrite(img, 1, width*height*3, fout);
 		fclose(fout);
@@ -292,6 +446,13 @@ int main() {
 	double bottom = -1.181;
 	double right = 1.6;
 	double top = 1.181;
+	
+	palette pal(3, palette::LINEAR);
+	pal.add_point( palette_point(color(180, 20, 60), 0) );
+	pal.add_point( palette_point(color(10, 20, 200), 0.3) );
+	pal.add_point( palette_point(color(110, 20, 200), 1.0) );
+	pal.cache();
+	pal.sample("sample.ppm", 800, 200);
 	
 	// Create a camera
 	camera cam(width, height, left, bottom, right, top);
